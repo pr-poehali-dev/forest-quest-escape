@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
-import { ForestGame3D, GameState3D } from '@/lib/ForestGame3D';
+import { ForestGame3D, GameState3D, loadGame } from '@/lib/ForestGame3D';
 
 const ITEM_MAP: Record<string, string> = {
   wrench: '🔧',
@@ -82,6 +82,25 @@ function InventoryHUD({ inventory }: { inventory: string[] }) {
   );
 }
 
+function FlashlightBar({ battery, on }: { battery: number; on: boolean }) {
+  const color = battery > 50 ? 'bg-yellow-600' : battery > 20 ? 'bg-orange-700' : 'bg-red-800';
+  const textColor = battery > 50 ? 'text-yellow-600' : battery > 20 ? 'text-orange-600' : 'text-red-600';
+  return (
+    <div className="flex items-center gap-2">
+      <span className={`text-sm transition-opacity ${on ? 'opacity-100' : 'opacity-30'}`}>🔦</span>
+      <div className="w-20 h-1.5 bg-gray-800 rounded-full overflow-hidden">
+        <div
+          className={`h-full rounded-full transition-all duration-300 ${on ? color : 'bg-gray-700'} ${battery < 20 && on ? 'animate-pulse' : ''}`}
+          style={{ width: `${battery}%` }}
+        />
+      </div>
+      <span className={`text-xs font-mono w-6 text-right ${on ? textColor : 'text-gray-700'}`}>
+        {Math.round(battery)}
+      </span>
+    </div>
+  );
+}
+
 function PointerLockHint() {
   const [locked, setLocked] = useState(!!document.pointerLockElement);
   useEffect(() => {
@@ -102,6 +121,8 @@ function PointerLockHint() {
 export default function Index() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const gameRef = useRef<ForestGame3D | null>(null);
+  const [hasSave, setHasSave] = useState(false);
+  const [saveInfo, setSaveInfo] = useState('');
   const [gameState, setGameState] = useState<GameState3D>({
     phase: 'menu',
     inventory: [],
@@ -114,7 +135,18 @@ export default function Index() {
     nearCar: false,
     message: '',
     messageTimer: 0,
+    flashlightOn: true,
+    flashlightBattery: 100,
   });
+
+  useEffect(() => {
+    const save = loadGame();
+    if (save) {
+      setHasSave(true);
+      const ago = Math.round((Date.now() - save.savedAt) / 60000);
+      setSaveInfo(`${save.inventory.length}/6 деталей · ${ago < 1 ? 'только что' : `${ago} мин назад`}`);
+    }
+  }, []);
 
   const handleStateChange = useCallback((s: GameState3D) => {
     setGameState({ ...s });
@@ -127,9 +159,10 @@ export default function Index() {
     return () => { game.destroy(); };
   }, [handleStateChange]);
 
-  const startGame = () => gameRef.current?.startGame();
+  const startGame = () => { setHasSave(false); gameRef.current?.startGame(); };
+  const loadSave = () => { setHasSave(false); gameRef.current?.loadSave(); };
   const resumeGame = () => gameRef.current?.resumeGame();
-  const restartGame = () => gameRef.current?.startGame();
+  const restartGame = () => { setHasSave(false); gameRef.current?.startGame(); };
 
   const phase = gameState.phase;
 
@@ -152,17 +185,30 @@ export default function Index() {
                 <span><span className="text-gray-200">Мышь</span> — обзор</span>
                 <span><span className="text-gray-200">Shift</span> — бег</span>
                 <span><span className="text-gray-200">E</span> — взять / починить</span>
+                <span><span className="text-gray-200">F</span> — фонарик вкл/выкл</span>
                 <span><span className="text-gray-200">Esc</span> — пауза</span>
-                <span><span className="text-gray-200">Клик</span> — захват курсора</span>
               </div>
             </div>
-            <button
-              onClick={startGame}
-              className="location-btn px-10 py-4 border border-red-800 rounded text-red-500 font-horror text-3xl tracking-widest hover:bg-red-950/30 transition-all animate-pulse-red"
-            >
-              ВОЙТИ В ЛЕС
-            </button>
-            <p className="text-gray-700 text-xs font-mono mt-5">3D · WebGL · Наушники рекомендованы</p>
+
+            <div className="space-y-3 mb-5">
+              <button
+                onClick={startGame}
+                className="location-btn w-full px-10 py-4 border border-red-800 rounded text-red-500 font-horror text-3xl tracking-widest hover:bg-red-950/30 transition-all animate-pulse-red"
+              >
+                ВОЙТИ В ЛЕС
+              </button>
+              {hasSave && (
+                <button
+                  onClick={loadSave}
+                  className="location-btn w-full px-6 py-3 border border-yellow-900 rounded text-yellow-700 font-mono text-sm hover:bg-yellow-950/20 transition-all flex items-center justify-center gap-2"
+                >
+                  <span>💾</span>
+                  <span>Продолжить</span>
+                  <span className="text-yellow-900 text-xs ml-1">({saveInfo})</span>
+                </button>
+              )}
+            </div>
+            <p className="text-gray-700 text-xs font-mono">3D · WebGL · Наушники рекомендованы</p>
           </div>
         </div>
       )}
@@ -238,6 +284,11 @@ export default function Index() {
               <BearIndicator distance={gameState.bearDistance} />
               <SanityBar sanity={gameState.sanity} />
               <StaminaBar stamina={gameState.stamina} isRunning={gameState.isRunning} />
+              <FlashlightBar battery={gameState.flashlightBattery} on={gameState.flashlightOn} />
+            </div>
+            {/* Flashlight hint */}
+            <div className="text-gray-700 text-xs font-mono px-1">
+              <span className="text-gray-600">[F]</span> — фонарик
             </div>
           </div>
 

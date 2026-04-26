@@ -23,6 +23,40 @@ export interface GameState3D {
   nearCar: boolean;
   message: string;
   messageTimer: number;
+  flashlightOn: boolean;
+  flashlightBattery: number;
+}
+
+// ─── SAVE / LOAD ──────────────────────────────────────────────────────────────
+const SAVE_KEY = 'forest_trap_save';
+
+export interface SaveData {
+  inventory: string[];
+  collectedItemIds: string[];
+  playerX: number;
+  playerZ: number;
+  bearX: number;
+  bearZ: number;
+  sanity: number;
+  flashlightBattery: number;
+  savedAt: number;
+}
+
+export function saveGame(data: SaveData) {
+  try {
+    localStorage.setItem(SAVE_KEY, JSON.stringify(data));
+  } catch (_e) { /* quota */ }
+}
+
+export function loadGame(): SaveData | null {
+  try {
+    const raw = localStorage.getItem(SAVE_KEY);
+    return raw ? (JSON.parse(raw) as SaveData) : null;
+  } catch (_e) { return null; }
+}
+
+export function deleteSave() {
+  localStorage.removeItem(SAVE_KEY);
 }
 
 // ─── AUDIO ────────────────────────────────────────────────────────────────────
@@ -149,6 +183,9 @@ export class ForestGame3D {
   private bearGrowlTimer = 0;
   private windStarted = false;
 
+  private flashlight!: THREE.SpotLight;
+  private flashlightMesh!: THREE.Group;
+
   public state: GameState3D = {
     phase: 'menu',
     inventory: [],
@@ -161,6 +198,8 @@ export class ForestGame3D {
     nearCar: false,
     message: '',
     messageTimer: 0,
+    flashlightOn: true,
+    flashlightBattery: 100,
   };
 
   private onStateChange: (s: GameState3D) => void;
@@ -228,11 +267,45 @@ export class ForestGame3D {
     moon.shadow.camera.bottom = -80;
     this.scene.add(moon);
 
-    // Player torch (flickering)
-    const torch = new THREE.PointLight(0xff8833, 2.5, 12);
+    // Player torch (ambient flicker - very dim, replaces old torch)
+    const torch = new THREE.PointLight(0xff6611, 0.4, 4);
     torch.name = 'torch';
     this.camera.add(torch);
     this.scene.add(this.camera);
+
+    // ── Flashlight (SpotLight) ──────────────────────────────────────────────
+    this.flashlight = new THREE.SpotLight(0xfff5e0, 8, 35, Math.PI / 10, 0.35, 1.5);
+    this.flashlight.name = 'flashlight';
+    this.flashlight.castShadow = false;
+    // Target moves with camera
+    const flashTarget = new THREE.Object3D();
+    flashTarget.position.set(0, 0, -1);
+    this.camera.add(flashTarget);
+    this.flashlight.target = flashTarget;
+    this.camera.add(this.flashlight);
+
+    // 3D flashlight model in hand (bottom-right of view)
+    this.flashlightMesh = new THREE.Group();
+    const bodyGeo = new THREE.CylinderGeometry(0.025, 0.03, 0.22, 8);
+    const bodyMat = new THREE.MeshLambertMaterial({ color: 0x1a1a1a });
+    const body = new THREE.Mesh(bodyGeo, bodyMat);
+    body.rotation.x = Math.PI / 2;
+    this.flashlightMesh.add(body);
+    const headGeo = new THREE.CylinderGeometry(0.04, 0.025, 0.05, 8);
+    const headMesh = new THREE.Mesh(headGeo, new THREE.MeshLambertMaterial({ color: 0x333333 }));
+    headMesh.rotation.x = Math.PI / 2;
+    headMesh.position.z = -0.13;
+    this.flashlightMesh.add(headMesh);
+    const lensMat = new THREE.MeshBasicMaterial({ color: 0xffffcc });
+    const lensGeo = new THREE.CircleGeometry(0.035, 8);
+    const lens = new THREE.Mesh(lensGeo, lensMat);
+    lens.name = 'lens';
+    lens.position.z = -0.16;
+    this.flashlightMesh.add(lens);
+    // Position in bottom-right of view (hand position)
+    this.flashlightMesh.position.set(0.22, -0.25, -0.45);
+    this.flashlightMesh.rotation.set(0.1, -0.15, 0.05);
+    this.camera.add(this.flashlightMesh);
 
     // Generate forest
     this.generateForest();
@@ -490,6 +563,14 @@ export class ForestGame3D {
       if (e.code === 'KeyE' && this.state.nearCar) {
         this.tryRepairCar();
       }
+      if (e.code === 'KeyF' && this.state.phase === 'playing') {
+        const on = !this.state.flashlightOn;
+        this.flashlight.visible = on;
+        const lens = this.flashlightMesh.getObjectByName('lens') as THREE.Mesh;
+        if (lens) (lens.material as THREE.MeshBasicMaterial).color.set(on ? 0xffffcc : 0x222222);
+        this.state = { ...this.state, flashlightOn: on, message: on ? '🔦 Фонарик включён' : '🔦 Фонарик выключен', messageTimer: 1.2 };
+        this.onStateChange({ ...this.state });
+      }
       if (e.code === 'Escape') {
         if (this.state.phase === 'playing') {
           document.exitPointerLock();
@@ -524,6 +605,7 @@ export class ForestGame3D {
 
   // ─── START / RESTART ──────────────────────────────────────────────────────
   public startGame() {
+    deleteSave();
     this.state = {
       ...this.state,
       phase: 'playing',
@@ -534,22 +616,58 @@ export class ForestGame3D {
       isRunning: false,
       nearItem: null,
       nearCar: false,
-      message: 'Найди детали и почини машину! WASD — движение, Shift — бег, E — взять',
+      message: 'WASD — движение  ·  Shift — бег  ·  E — взять  ·  F — фонарик',
       messageTimer: 5,
+      flashlightOn: true,
+      flashlightBattery: 100,
     };
     this.playerPos.set(0, 1.7, 5);
-    this.bearPos.set(-25, 0, -20);
-    this.bearMesh.position.copy(this.bearPos);
+    this.bearMesh.position.set(-25, 0, -20);
     this.items.forEach(item => {
       item.collected = false;
       item.mesh.visible = true;
       item.glowLight.visible = true;
     });
+    this.flashlight.visible = true;
+    const lens = this.flashlightMesh.getObjectByName('lens') as THREE.Mesh;
+    if (lens) (lens.material as THREE.MeshBasicMaterial).color.set(0xffffcc);
     this.canvas.requestPointerLock();
-    if (!this.windStarted) {
-      playSound('wind');
-      this.windStarted = true;
-    }
+    if (!this.windStarted) { playSound('wind'); this.windStarted = true; }
+    this.onStateChange({ ...this.state });
+  }
+
+  public loadSave() {
+    const save = loadGame();
+    if (!save) return;
+    this.state = {
+      ...this.state,
+      phase: 'playing',
+      inventory: save.inventory,
+      bearDistance: 30,
+      sanity: save.sanity,
+      stamina: 100,
+      isRunning: false,
+      nearItem: null,
+      nearCar: false,
+      message: `💾 Загружено — ${save.inventory.length} деталей`,
+      messageTimer: 3,
+      flashlightOn: true,
+      flashlightBattery: save.flashlightBattery,
+    };
+    this.playerPos.set(save.playerX, 1.7, save.playerZ);
+    this.bearMesh.position.set(save.bearX, 0, save.bearZ);
+    // Restore collected items
+    this.items.forEach(item => {
+      const was = save.collectedItemIds.includes(item.id);
+      item.collected = was;
+      item.mesh.visible = !was;
+      item.glowLight.visible = !was;
+    });
+    this.flashlight.visible = true;
+    const lens = this.flashlightMesh.getObjectByName('lens') as THREE.Mesh;
+    if (lens) (lens.material as THREE.MeshBasicMaterial).color.set(0xffffcc);
+    this.canvas.requestPointerLock();
+    if (!this.windStarted) { playSound('wind'); this.windStarted = true; }
     this.onStateChange({ ...this.state });
   }
 
@@ -730,13 +848,43 @@ export class ForestGame3D {
   }
 
   private updateTorch(delta: number) {
+    // Ambient torch flicker
     const torch = this.scene.getObjectByName('torch') as THREE.PointLight;
     if (torch) {
-      // Flicker effect
-      const flicker = 0.9 + Math.sin(Date.now() * 0.023) * 0.05 + Math.random() * 0.03;
-      torch.intensity = 2.5 * flicker;
-      torch.distance = 11 + Math.sin(Date.now() * 0.017) * 1.5;
+      const flicker = 0.85 + Math.sin(Date.now() * 0.031) * 0.1 + Math.random() * 0.05;
+      torch.intensity = 0.4 * flicker;
     }
+
+    // Flashlight battery drain + flicker
+    let { flashlightBattery, flashlightOn } = this.state;
+    if (flashlightOn) {
+      flashlightBattery = Math.max(0, flashlightBattery - delta * 1.2);
+
+      // Low battery flicker
+      const lowFactor = flashlightBattery < 20 ? (0.4 + Math.random() * 0.6) : 1;
+      const baseIntensity = (flashlightBattery / 100) * 8 * lowFactor;
+      this.flashlight.intensity = baseIntensity;
+      this.flashlight.distance = 15 + (flashlightBattery / 100) * 20;
+
+      // Dead battery
+      if (flashlightBattery <= 0) {
+        flashlightOn = false;
+        this.flashlight.visible = false;
+        const lens = this.flashlightMesh.getObjectByName('lens') as THREE.Mesh;
+        if (lens) (lens.material as THREE.MeshBasicMaterial).color.set(0x222222);
+        this.state = { ...this.state, flashlightOn: false, flashlightBattery: 0, message: '🔦 Батарейка села!', messageTimer: 3 };
+        this.onStateChange({ ...this.state });
+        return;
+      }
+    }
+
+    // Hand sway animation
+    const t = Date.now() * 0.0015;
+    const swayX = Math.sin(t) * (this.state.isRunning ? 0.025 : 0.008);
+    const swayY = Math.abs(Math.sin(t * 1.8)) * (this.state.isRunning ? 0.02 : 0.005) - 0.005;
+    this.flashlightMesh.position.set(0.22 + swayX, -0.25 + swayY, -0.45);
+
+    this.state = { ...this.state, flashlightBattery, flashlightOn };
   }
 
   private collectItem(item: GameItem) {
@@ -746,16 +894,27 @@ export class ForestGame3D {
     playSound('pickup');
 
     const newInventory = [...this.state.inventory, item.id];
+    const allDone = newInventory.length === this.state.requiredItems.length;
     this.state = {
       ...this.state,
       inventory: newInventory,
-      message: `Подобрал: ${item.emoji} ${item.name}`,
-      messageTimer: 2.5,
+      message: allDone ? '✓ Все детали собраны! Возвращайся к машине!' : `💾 Сохранено · ${item.emoji} ${item.name}`,
+      messageTimer: allDone ? 5 : 2.5,
     };
 
-    if (newInventory.length === this.state.requiredItems.length) {
-      this.state = { ...this.state, message: '✓ Все детали собраны! Возвращайся к машине!', messageTimer: 5 };
-    }
+    // ── AUTO SAVE ──────────────────────────────────────────────────────────
+    saveGame({
+      inventory: newInventory,
+      collectedItemIds: this.items.filter(i => i.collected).map(i => i.id),
+      playerX: this.playerPos.x,
+      playerZ: this.playerPos.z,
+      bearX: this.bearMesh.position.x,
+      bearZ: this.bearMesh.position.z,
+      sanity: this.state.sanity,
+      flashlightBattery: this.state.flashlightBattery,
+      savedAt: Date.now(),
+    });
+
     this.onStateChange({ ...this.state });
   }
 
